@@ -80,6 +80,26 @@ export interface AppConfig {
   mode: "ai" | "free";
   provider: string;
   label: string;
+  ai_enabled: boolean;
+  ai_mode: string;
+  demo_email?: string | null;
+  demo_password?: string | null;
+}
+
+export interface ProfileData {
+  user: User;
+  stats: {
+    total_submissions: number;
+    correct_count: number;
+    wrong_count: number;
+    accuracy: number;
+    created_problem_count: number;
+  };
+  weak_categories: CategoryStat[];
+  weak_concepts: { concept: string; wrong: number }[];
+  recent_wrong_notes: WrongNote[];
+  ai_mode: string;
+  ai_enabled: boolean;
 }
 
 export interface User {

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { getToken, removeToken, setToken } from "../api";
+import { API_URL, getToken, removeToken, setToken } from "../api";
 import type { TokenResponse, User } from "../types";
 
 interface AuthContextValue {
@@ -24,7 +24,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     // Validate stored token with /auth/me
-    fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:8000"}/auth/me`, {
+    fetch(`${API_URL}/auth/me`, {
       headers: { Authorization: `Bearer ${stored}` },
     })
       .then((r) => (r.ok ? r.json() : Promise.reject()))

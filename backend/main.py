@@ -26,12 +26,20 @@ from models import (
     Difficulty,
     LoginRequest,
     Problem,
+    ProfileResponse,
     RegisterRequest,
     TokenResponse,
     UserPublic,
     WrongNote,
 )
-from seed import merge_new_seed_problems, seed_if_empty
+from seed import (
+    DEMO_EMAIL,
+    DEMO_PASSWORD,
+    DEMO_USERNAME,
+    merge_new_seed_problems,
+    seed_demo_user_if_missing,
+    seed_if_empty,
+)
 
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
@@ -55,6 +63,7 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await seed_if_empty(db)
         await merge_new_seed_problems(db)
+        await seed_demo_user_if_missing(db)
     yield
 
 
@@ -105,10 +114,15 @@ def health():
 def app_config():
     mode_id, label = app_mode_label()
     prov = cloud_ai_provider()
+    ai_enabled = prov is not None
     return AppConfigResponse(
         mode="ai" if prov else "free",
         provider=prov or "rule_template",
         label=label,
+        ai_enabled=ai_enabled,
+        ai_mode="AI Mode" if ai_enabled else "Free Rule Mode",
+        demo_email=DEMO_EMAIL,
+        demo_password=DEMO_PASSWORD,
     )
 
 
@@ -448,3 +462,99 @@ async def generate_problems_endpoint(
         await db.refresh(row)
 
     return GenerateResponse(problems=created)
+
+
+# ── Profile ──────────────────────────────────────────────────────────────────
+
+@app.get("/profile", response_model=ProfileResponse)
+async def get_profile(
+    current_user: UserRow = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Submissions for this user, with problem joined for category/concept analysis
+    sub_result = await db.execute(
+        select(SubmissionRow)
+        .where(SubmissionRow.user_id == current_user.id)
+        .options(selectinload(SubmissionRow.problem))
+        .order_by(SubmissionRow.created_at.desc())
+    )
+    submissions = sub_result.scalars().all()
+
+    total = len(submissions)
+    correct = sum(1 for s in submissions if s.is_correct)
+    wrong = total - correct
+    accuracy = round(correct / total * 100) if total else 0
+
+    # Created problem count (owner_id == current_user.id)
+    created_problem_count = await db.scalar(
+        select(func.count()).select_from(ProblemRow).where(
+            ProblemRow.owner_id == current_user.id
+        )
+    ) or 0
+
+    # Weak categories (per-category wrong rate, min 2 attempts)
+    cat_total: dict[str, int] = {}
+    cat_wrong: dict[str, int] = {}
+    concept_wrong: dict[str, int] = {}
+    for s in submissions:
+        if s.problem is None:
+            continue
+        c = s.problem.category
+        cat_total[c] = cat_total.get(c, 0) + 1
+        if not s.is_correct:
+            cat_wrong[c] = cat_wrong.get(c, 0) + 1
+            concept = (s.problem.concept or "").strip()
+            if concept:
+                concept_wrong[concept] = concept_wrong.get(concept, 0) + 1
+
+    weak_cats: list[CategoryStat] = []
+    for cat, t in cat_total.items():
+        w = cat_wrong.get(cat, 0)
+        rate = round(w / t, 3) if t else 0.0
+        weak_cats.append(CategoryStat(category=cat, total=t, wrong=w, wrong_rate=rate))
+    weak_cats.sort(key=lambda x: (-x.wrong_rate, -x.wrong))
+    weak_cats = [c for c in weak_cats if c.total >= 2][:3]
+
+    weak_concepts = sorted(
+        ({"concept": k, "wrong": v} for k, v in concept_wrong.items()),
+        key=lambda x: -x["wrong"],
+    )[:5]
+
+    # Recent wrong notes (top 5)
+    recent_wrong = []
+    for s in submissions:
+        if s.is_correct or s.problem is None:
+            continue
+        recent_wrong.append(WrongNote(
+            submission_id=s.id,
+            problem_id=s.problem_id,
+            problem_title=s.problem.title,
+            problem_question=s.problem.question,
+            category=s.problem.category,
+            difficulty=s.problem.difficulty,
+            problem_type=s.problem.problem_type,
+            user_answer=s.user_answer,
+            feedback=s.feedback,
+            submitted_at=s.created_at,
+        ))
+        if len(recent_wrong) >= 5:
+            break
+
+    prov = cloud_ai_provider()
+    ai_enabled = prov is not None
+
+    return ProfileResponse(
+        user=UserPublic.model_validate(current_user),
+        stats={
+            "total_submissions": total,
+            "correct_count": correct,
+            "wrong_count": wrong,
+            "accuracy": accuracy,
+            "created_problem_count": created_problem_count,
+        },
+        weak_categories=weak_cats,
+        weak_concepts=weak_concepts,
+        recent_wrong_notes=recent_wrong,
+        ai_mode="AI Mode" if ai_enabled else "Free Rule Mode",
+        ai_enabled=ai_enabled,
+    )

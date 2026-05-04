@@ -84,6 +84,20 @@ class AppConfigResponse(BaseModel):
     mode: Literal["ai", "free"]
     provider: str
     label: str
+    ai_enabled: bool
+    ai_mode: str  # "AI Mode" | "Free Rule Mode"
+    demo_email: Optional[str] = None
+    demo_password: Optional[str] = None
+
+
+class ProfileResponse(BaseModel):
+    user: "UserPublic"
+    stats: dict
+    weak_categories: list["CategoryStat"]
+    weak_concepts: list[dict]
+    recent_wrong_notes: list["WrongNote"]
+    ai_mode: str
+    ai_enabled: bool
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

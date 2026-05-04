@@ -51,6 +51,14 @@ function IconPuzzle() {
     </svg>
   );
 }
+function IconUser() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
+    </svg>
+  );
+}
 function IconLogOut() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -91,6 +99,7 @@ const NAV = [
   { to: "/generate", icon: IconSparkle, label: "문제 생성", end: false, auth: true },
   { to: "/wrong-notes", icon: IconBookmark, label: "오답노트", end: false, auth: true },
   { to: "/stats", icon: IconChart, label: "통계", end: false, auth: true },
+  { to: "/profile", icon: IconUser, label: "프로필", end: false, auth: true },
 ];
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -193,8 +202,11 @@ export default function AppShell() {
             API {health === "ok" ? "연결됨" : health === "down" ? "오프라인" : "확인 중"}
           </span>
           {cfg && (
-            <span className={`ml-auto text-2xs font-medium ${cfg.mode === "ai" ? "text-sky-400" : "text-amber-400"}`}>
-              {cfg.label}
+            <span
+              className={`ml-auto text-2xs font-medium ${cfg.ai_enabled ? "text-sky-400" : "text-amber-400"}`}
+              title={cfg.ai_enabled ? "AI Mode 활성화됨" : "Free Rule Mode — 내장 규칙 코치"}
+            >
+              {cfg.ai_mode ?? cfg.label}
             </span>
           )}
         </div>
@@ -202,11 +214,13 @@ export default function AppShell() {
         {/* User info */}
         {user ? (
           <div className="flex items-center gap-2 rounded-md px-1 py-1">
-            <UserBadge username={user.username} />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-ink-200 truncate">{user.username}</p>
-              <p className="text-2xs text-ink-600 truncate">{user.email}</p>
-            </div>
+            <Link to="/profile" className="flex items-center gap-2 flex-1 min-w-0 hover:bg-ink-800/40 rounded p-1 -m-1 transition-colors no-underline">
+              <UserBadge username={user.username} />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-ink-200 truncate">{user.username}</p>
+                <p className="text-2xs text-ink-600 truncate">{user.email}</p>
+              </div>
+            </Link>
             <button
               type="button"
               onClick={handleLogout}
