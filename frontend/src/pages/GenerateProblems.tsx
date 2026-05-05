@@ -1,13 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch, fetchAppConfig } from "../api";
 import { CATEGORY_CONFIG, CATEGORY_ORDER, DIFFICULTY_CONFIG } from "../constants";
-import type { AppConfig, Category, Difficulty, GenerateResponse, Problem } from "../types";
+import type { AppConfig, Category, Difficulty, Problem } from "../types";
 
-type Status = "idle" | "loading" | "success" | "error";
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-function parseError(detail: unknown): string {
-  if (typeof detail === "string") return detail;
+type Phase = "idle" | "loading" | "done" | "error";
+
+interface GenerateResult {
+  problems: Problem[];
+  usedFallback: boolean;
+  source: string; // "ai" | "template" | "unknown"
+}
+
+// ── Error parser ──────────────────────────────────────────────────────────────
+
+function parseApiError(detail: unknown): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
   if (Array.isArray(detail)) {
     return detail
       .map((x) =>
@@ -15,71 +25,109 @@ function parseError(detail: unknown): string {
           ? String((x as { msg: string }).msg)
           : String(x)
       )
-      .join(" ");
+      .join(" · ");
   }
-  return "문제 생성 중 오류가 발생했습니다.";
+  return "알 수 없는 오류가 발생했습니다.";
 }
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function GenerateProblems() {
   const [category, setCategory] = useState<Category>("file");
   const [difficulty, setDifficulty] = useState<Difficulty>("easy");
   const [count, setCount] = useState(3);
-  const [status, setStatus] = useState<Status>("idle");
-  const [generated, setGenerated] = useState<Problem[]>([]);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [result, setResult] = useState<GenerateResult | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [cfg, setCfg] = useState<AppConfig | null>(null);
-  const [usedFallback, setUsedFallback] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchAppConfig().then(setCfg);
   }, []);
 
+  // Clean up in-flight request on unmount
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   const isFree = cfg?.mode === "free";
 
-  function handleGenerate() {
-    setStatus("loading");
-    setGenerated([]);
+  async function handleGenerate() {
+    // Cancel any previous in-flight request
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    setPhase("loading");
+    setResult(null);
     setErrorMsg("");
-    setUsedFallback(false);
 
-    apiFetch("/generate-problems", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category, difficulty, count }),
-    })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const msg = parseError(data.detail ?? data.message);
-          throw new Error(msg);
-        }
-        return data as GenerateResponse;
-      })
-      .then((data) => {
-        console.log("[GenerateProblems] API response:", data);
-
-        const problems: Problem[] = Array.isArray(data.problems) ? data.problems : [];
-
-        if (problems.length === 0) {
-          // Success but empty — treat as soft error
-          setErrorMsg("생성된 문제가 없습니다. 잠시 후 다시 시도해 주세요.");
-          setStatus("error");
-          return;
-        }
-
-        // Detect if the backend fell back (ai_generated=false while cloud AI is configured)
-        if (cfg?.ai_enabled && problems.every((p) => !p.ai_generated)) {
-          setUsedFallback(true);
-        }
-
-        setGenerated(problems);
-        setStatus("success");
-      })
-      .catch((err: Error) => {
-        console.error("[GenerateProblems] error:", err.message);
-        setErrorMsg(err.message || "알 수 없는 오류가 발생했습니다.");
-        setStatus("error");
+    try {
+      const res = await apiFetch("/generate-problems", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category, difficulty, count }),
+        signal: ctrl.signal,
       });
+
+      // Parse body regardless of status code so we can read error details
+      let body: unknown;
+      try {
+        body = await res.json();
+      } catch {
+        body = {};
+      }
+
+      console.log("[GenerateProblems] HTTP", res.status, "response:", body);
+
+      if (!res.ok) {
+        const detail = (body as { detail?: unknown })?.detail;
+        const msg = (body as { message?: unknown })?.message;
+        throw new Error(parseApiError(detail ?? msg ?? `HTTP ${res.status}`));
+      }
+
+      // Validate response structure
+      const data = body as { problems?: unknown };
+      if (!data || typeof data !== "object") {
+        throw new Error(`응답 형식 오류: 객체가 아닙니다 (${typeof data})`);
+      }
+
+      const rawProblems = data.problems;
+      if (!Array.isArray(rawProblems)) {
+        throw new Error(
+          `응답 형식 오류: problems 필드가 배열이 아닙니다 (${typeof rawProblems})`
+        );
+      }
+
+      const problems = rawProblems as Problem[];
+      console.log("[GenerateProblems] parsed problems:", problems.length);
+
+      if (problems.length === 0) {
+        throw new Error(
+          "서버가 빈 배열을 반환했습니다. 잠시 후 다시 시도해 주세요."
+        );
+      }
+
+      // Detect fallback: all problems are template-based while AI is configured
+      const allTemplate = problems.every((p) => !p.ai_generated);
+      const usedFallback = Boolean(cfg?.ai_enabled && allTemplate);
+      const source = problems[0]?.ai_generated
+        ? "ai"
+        : "template";
+
+      setResult({ problems, usedFallback, source });
+      setPhase("done");
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === "AbortError") return; // component unmounted
+
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "네트워크 오류가 발생했습니다.";
+
+      console.error("[GenerateProblems] error:", msg);
+      setErrorMsg(msg);
+      setPhase("error");
+    }
   }
 
   const catCfg = CATEGORY_CONFIG[category];
@@ -87,7 +135,7 @@ export default function GenerateProblems() {
 
   return (
     <div className="max-w-lg space-y-6">
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────── */}
       <div>
         <h1 className="text-xl font-semibold text-white tracking-tight">문제 생성</h1>
         <p className="mt-0.5 text-xs text-ink-600">
@@ -95,37 +143,38 @@ export default function GenerateProblems() {
         </p>
       </div>
 
-      {/* Free-mode notice */}
+      {/* ── Free-mode notice ────────────────────────────────────────────── */}
       {isFree && (
         <div className="rounded-md border border-amber-500/15 bg-amber-500/5 px-4 py-3">
-          <p className="text-xs font-medium text-amber-300">무료 모드</p>
+          <p className="text-xs font-medium text-amber-300">무료 모드 (템플릿)</p>
           <p className="mt-0.5 text-xs text-amber-200/60">
-            내장 템플릿 기반으로 생성됩니다. OpenAI 또는 Gemini API 키를 설정하면 AI로
-            생성할 수 있습니다.
+            내장 문제 풀에서 선택합니다. OpenAI 또는 Gemini API 키를 설정하면
+            AI가 새 문제를 직접 생성합니다.
           </p>
         </div>
       )}
 
-      {/* Fallback notice (shown when AI was active but fell back to templates) */}
-      {usedFallback && (
+      {/* ── Fallback notice ─────────────────────────────────────────────── */}
+      {result?.usedFallback && (
         <div className="rounded-md border border-sky-500/15 bg-sky-500/5 px-4 py-3">
-          <p className="text-xs font-medium text-sky-300">템플릿 모드로 생성</p>
+          <p className="text-xs font-medium text-sky-300">템플릿으로 대체됨</p>
           <p className="mt-0.5 text-xs text-sky-200/60">
-            AI 응답에 문제가 있어 내장 템플릿으로 대체됐습니다. AI 키 설정을 확인하거나
-            잠시 후 다시 시도해 주세요.
+            AI 응답에 문제가 있어 내장 템플릿으로 생성했습니다. API 키를
+            확인하거나 잠시 후 다시 시도해 주세요.
           </p>
         </div>
       )}
 
-      {/* Controls */}
+      {/* ── Controls ────────────────────────────────────────────────────── */}
       <div className="rounded-lg border border-ink-800 bg-ink-900 p-5 space-y-4">
         <div className="grid sm:grid-cols-2 gap-3">
+          {/* Category */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-ink-400">카테고리</label>
             <select
               value={category}
               onChange={(e) => setCategory(e.target.value as Category)}
-              disabled={status === "loading"}
+              disabled={phase === "loading"}
               className="w-full rounded-md border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-ink-500 transition-colors disabled:opacity-50"
             >
               {CATEGORY_ORDER.map((cat) => (
@@ -135,12 +184,14 @@ export default function GenerateProblems() {
               ))}
             </select>
           </div>
+
+          {/* Difficulty */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-ink-400">난이도</label>
             <select
               value={difficulty}
               onChange={(e) => setDifficulty(e.target.value as Difficulty)}
-              disabled={status === "loading"}
+              disabled={phase === "loading"}
               className="w-full rounded-md border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-ink-500 transition-colors disabled:opacity-50"
             >
               {(Object.keys(DIFFICULTY_CONFIG) as Difficulty[]).map((d) => (
@@ -152,9 +203,11 @@ export default function GenerateProblems() {
           </div>
         </div>
 
+        {/* Count */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-ink-400">
-            생성 개수 <span className="text-ink-700">(1–10)</span>
+            생성 개수{" "}
+            <span className="text-ink-700">(1–10)</span>
           </label>
           <input
             type="number"
@@ -164,18 +217,19 @@ export default function GenerateProblems() {
             onChange={(e) =>
               setCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))
             }
-            disabled={status === "loading"}
+            disabled={phase === "loading"}
             className="w-full rounded-md border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-ink-500 transition-colors disabled:opacity-50"
           />
         </div>
 
+        {/* Generate button */}
         <button
           type="button"
           onClick={handleGenerate}
-          disabled={status === "loading"}
+          disabled={phase === "loading"}
           className="w-full rounded-md bg-white py-2.5 text-sm font-medium text-ink-950 hover:bg-ink-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {status === "loading" ? (
+          {phase === "loading" ? (
             <span className="flex items-center justify-center gap-2">
               <span className="inline-block h-3 w-3 rounded-full border-2 border-ink-400 border-t-ink-700 animate-spin" />
               생성 중…
@@ -186,29 +240,40 @@ export default function GenerateProblems() {
         </button>
       </div>
 
-      {/* Error state */}
-      {status === "error" && (
-        <div className="rounded-md border border-red-500/20 bg-red-500/5 px-4 py-3">
-          <p className="text-xs font-medium text-red-400 mb-1">생성 실패</p>
-          <p className="text-xs text-ink-500 font-mono break-words">{errorMsg}</p>
+      {/* ── Error state ─────────────────────────────────────────────────── */}
+      {phase === "error" && (
+        <div className="rounded-md border border-red-500/20 bg-red-500/5 px-4 py-3 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-red-400">생성 실패</p>
+            <p className="mt-1 text-xs text-ink-500 font-mono break-all">{errorMsg}</p>
+          </div>
           <button
             type="button"
             onClick={handleGenerate}
-            className="mt-3 rounded-md border border-red-500/20 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 transition-colors"
+            className="rounded-md border border-red-500/20 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 transition-colors"
           >
-            다시 시도
+            ↻ 다시 시도
           </button>
         </div>
       )}
 
-      {/* Success state */}
-      {status === "success" && generated.length > 0 && (
+      {/* ── Success state ────────────────────────────────────────────────── */}
+      {phase === "done" && result && result.problems.length > 0 && (
         <div className="space-y-3">
+          {/* Summary */}
           <div className="flex items-center justify-between">
-            <p className="text-xs text-emerald-400 font-medium">
-              {generated.length}개 생성 완료
-              {usedFallback && (
-                <span className="ml-1.5 text-sky-400">(템플릿)</span>
+            <p className="flex items-center gap-2 text-xs font-medium text-emerald-400">
+              <span>✓</span>
+              {result.problems.length}개 생성 완료
+              {result.source === "ai" && (
+                <span className="rounded border border-sky-500/20 bg-sky-500/5 px-1.5 py-0.5 text-sky-400">
+                  AI
+                </span>
+              )}
+              {(result.source === "template" || result.usedFallback) && (
+                <span className="rounded border border-amber-500/20 bg-amber-500/5 px-1.5 py-0.5 text-amber-400">
+                  템플릿
+                </span>
               )}
             </p>
             <Link
@@ -219,23 +284,20 @@ export default function GenerateProblems() {
             </Link>
           </div>
 
+          {/* Problem list */}
           <ul className="space-y-1.5">
-            {generated.map((p) => (
+            {result.problems.map((p) => (
               <li key={p.id}>
                 <Link
                   to={`/problems/${p.id}`}
                   className="flex items-center gap-3 rounded-md border border-ink-800 bg-ink-900 px-4 py-3 no-underline hover:border-ink-700 transition-colors group"
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span
-                        className={`text-2xs rounded border px-1.5 py-0.5 font-medium ${catCfg.tw}`}
-                      >
+                    <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                      <span className={`text-2xs rounded border px-1.5 py-0.5 font-medium ${catCfg.tw}`}>
                         {catCfg.label}
                       </span>
-                      <span
-                        className={`text-2xs rounded border px-1.5 py-0.5 font-medium ${diffCfg.tw}`}
-                      >
+                      <span className={`text-2xs rounded border px-1.5 py-0.5 font-medium ${diffCfg.tw}`}>
                         {diffCfg.label}
                       </span>
                       {p.ai_generated && (
@@ -247,8 +309,11 @@ export default function GenerateProblems() {
                     <p className="text-sm font-medium text-ink-200 group-hover:text-white transition-colors truncate">
                       {p.title}
                     </p>
+                    {p.concept && (
+                      <p className="mt-0.5 text-2xs text-ink-600 truncate">{p.concept}</p>
+                    )}
                   </div>
-                  <span className="text-ink-700 group-hover:text-ink-400 transition-colors text-xs shrink-0">
+                  <span className="shrink-0 text-ink-700 group-hover:text-ink-400 transition-colors text-xs">
                     →
                   </span>
                 </Link>

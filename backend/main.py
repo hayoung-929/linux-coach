@@ -1,8 +1,13 @@
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# Ensure all application loggers propagate to uvicorn's root handler
+logging.basicConfig(level=logging.INFO)
+_app_log = logging.getLogger("linuxcoach")
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -821,6 +826,14 @@ async def generate_problems_endpoint(
     current_user: UserRow = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    _log = logging.getLogger("linuxcoach.generate")
+
+    _log.info(
+        "[generate] user=%s category=%s difficulty=%s count=%d",
+        current_user.id, body.category, body.difficulty, body.count,
+    )
+
+    # ── Step 1: Generate raw problem dicts ────────────────────────────────────
     try:
         raw_list = await ai_generate_problems(
             category=body.category,
@@ -828,41 +841,83 @@ async def generate_problems_endpoint(
             count=body.count,
         )
     except GeminiQuotaExceededError as e:
+        _log.warning("[generate] quota exceeded: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
+        _log.error("[generate] generation error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"문제 생성 중 오류: {e}")
 
-    created: list[ProblemRow] = []
+    if not raw_list:
+        _log.error("[generate] empty raw_list returned — this should never happen")
+        raise HTTPException(status_code=500, detail="문제 생성 결과가 비어 있습니다.")
+
+    _log.info("[generate] generated %d raw problems", len(raw_list))
+
+    # ── Step 2: Persist to DB ─────────────────────────────────────────────────
     is_cloud = cloud_ai_provider() is not None
-    for raw in raw_list:
-        ans = raw["answer"]
-        if isinstance(ans, list):
-            ans = json.dumps(ans, ensure_ascii=False)
-        elif not isinstance(ans, str):
-            ans = str(ans)
-        problem_row = ProblemRow(
-            title=raw["title"],
-            category=body.category,
-            difficulty=body.difficulty,
-            question=raw["question"],
-            answer=ans,
-            hint=raw["hint"],
-            concept=raw["concept"],
-            ai_generated=is_cloud,
-            problem_type="command",
-            owner_id=current_user.id,
+    created: list[ProblemRow] = []   # keep references so we can read IDs after flush
+    created_ids: list[int] = []
+
+    try:
+        for raw in raw_list:
+            ans = raw.get("answer", "")
+            if isinstance(ans, list):
+                ans = json.dumps(ans, ensure_ascii=False)
+            elif not isinstance(ans, str):
+                ans = str(ans)
+
+            problem_row = ProblemRow(
+                title=str(raw.get("title") or f"{body.category} 문제"),
+                category=body.category,
+                difficulty=body.difficulty,
+                question=str(raw.get("question") or ""),
+                answer=ans,
+                hint=str(raw.get("hint") or ""),
+                concept=str(raw.get("concept") or ""),
+                ai_generated=is_cloud,
+                problem_type="command",
+                owner_id=current_user.id,
+            )
+            db.add(problem_row)
+            created.append(problem_row)
+
+        # flush() sends SQL INSERTs; SQLAlchemy populates .id on each object
+        await db.flush()
+
+        # Collect IDs before commit() expires the ORM objects
+        created_ids = [row.id for row in created if row.id is not None]
+
+        await db.commit()
+        _log.info("[generate] committed %d problems, IDs=%s", len(created_ids), created_ids)
+
+    except Exception as e:
+        await db.rollback()
+        _log.error("[generate] DB error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB 저장 중 오류: {e}")
+
+    # ── Step 3: Reload from DB (fresh SELECT — avoids ORM lazy-load issues) ──
+    if created_ids:
+        stmt = select(ProblemRow).where(ProblemRow.id.in_(created_ids)).order_by(ProblemRow.id)
+        result = await db.execute(stmt)
+        saved_rows = list(result.scalars().all())
+    else:
+        # Fallback: fetch the N most-recently-created rows for this user
+        stmt = (
+            select(ProblemRow)
+            .where(ProblemRow.owner_id == current_user.id)
+            .order_by(ProblemRow.id.desc())
+            .limit(body.count)
         )
-        db.add(problem_row)
-        created.append(problem_row)
+        result = await db.execute(stmt)
+        saved_rows = list(reversed(result.scalars().all()))
 
-    await db.flush()
-    await db.commit()
-    for row in created:
-        await db.refresh(row)
+    _log.info("[generate] returning %d problems to client", len(saved_rows))
 
-    return GenerateResponse(problems=created)
+    if not saved_rows:
+        _log.error("[generate] saved_rows is empty after commit — DB issue")
+        raise HTTPException(status_code=500, detail="저장된 문제를 불러오지 못했습니다.")
+
+    return GenerateResponse(problems=saved_rows)
 
 
 # ── Profile ──────────────────────────────────────────────────────────────────
