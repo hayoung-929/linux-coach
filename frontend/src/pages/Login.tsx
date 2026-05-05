@@ -118,6 +118,11 @@ export default function Login() {
           <p className="mb-4 text-center text-2xs text-ink-600">
             처음이신가요? 회원가입 없이 즉시 체험할 수 있어요
           </p>
+          <div className="mb-3 flex justify-center gap-3 text-2xs">
+            <Link to="/find-account" className="text-ink-600 hover:text-ink-300 transition-colors no-underline">계정 찾기</Link>
+            <span className="text-ink-800">·</span>
+            <Link to="/forgot-password" className="text-ink-600 hover:text-ink-300 transition-colors no-underline">비밀번호 찾기</Link>
+          </div>
 
           <div className="relative my-3">
             <div className="absolute inset-0 flex items-center">

@@ -1,8 +1,10 @@
-"""JWT creation/verification and password hashing utilities."""
+"""JWT creation/verification, password hashing, and reset-token utilities."""
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -36,3 +38,36 @@ def decode_token(token: str) -> Optional[int]:
         return int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         return None
+
+
+# ── Password-reset tokens ─────────────────────────────────────────────────────
+
+RESET_TOKEN_EXPIRE_MINUTES = 30
+
+
+def generate_reset_token() -> str:
+    """Return a URL-safe random token (256 bits of entropy)."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_reset_token(raw_token: str) -> str:
+    """SHA-256 hash of the raw token for storage.
+
+    We use SHA-256 (not bcrypt) because:
+    - The token is already high-entropy random data (256 bits)
+    - We need fast lookup by hash on the DB side
+    - bcrypt's 72-byte limit and slow KDF are unnecessary here
+    """
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
+def mask_email(email: str) -> str:
+    """Return a privacy-safe masked email, e.g. kim@example.com → k**@example.com."""
+    if "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    if len(local) <= 1:
+        masked_local = local
+    else:
+        masked_local = local[0] + "**"
+    return f"{masked_local}@{domain}"

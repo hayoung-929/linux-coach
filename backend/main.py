@@ -1,20 +1,30 @@
 import json
+import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import delete as sa_delete, func, or_, select, text
+from sqlalchemy import delete as sa_delete, func, or_, select, text, update as sa_update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_config import app_mode_label, cloud_ai_provider
 from app_errors import GeminiQuotaExceededError
-from auth_utils import create_access_token, hash_password, verify_password
+from auth_utils import (
+    create_access_token,
+    generate_reset_token,
+    hash_password,
+    hash_reset_token,
+    mask_email,
+    verify_password,
+    RESET_TOKEN_EXPIRE_MINUTES,
+)
 from database import AsyncSessionLocal, Base, engine, get_db
-from db_models import ProblemRow, SubmissionRow, UserRow
+from db_models import PasswordResetTokenRow, ProblemRow, SubmissionRow, UserRow
 from feedback import generate_feedback
 from generate import generate_problems as ai_generate_problems
 from grader import is_correct as grade
@@ -23,12 +33,20 @@ from models import (
     AppConfigResponse,
     Category,
     CategoryStat,
+    ChangePasswordRequest,
+    DeleteAccountRequest,
     Difficulty,
+    FindAccountRequest,
+    FindAccountResponse,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     Problem,
     ProfileResponse,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenResponse,
+    UpdateProfileRequest,
     UserPublic,
     WrongNote,
 )
@@ -57,6 +75,9 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE problems ADD COLUMN IF NOT EXISTS choices TEXT",
             # is_demo: identifies the seeded demo account (used for data cleanup on logout)
             "ALTER TABLE users ADD COLUMN is_demo BOOLEAN NOT NULL DEFAULT FALSE",
+            # Soft-delete support
+            "ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE",
+            "ALTER TABLE users ADD COLUMN deleted_at DATETIME",
         ]:
             try:
                 await conn.execute(text(stmt))
@@ -94,7 +115,11 @@ async def get_current_user_optional(
     uid = decode_token(credentials.credentials)
     if uid is None:
         return None
-    return await db.get(UserRow, uid)
+    user = await db.get(UserRow, uid)
+    # Deactivated (soft-deleted) accounts are treated as unauthenticated
+    if user is None or not user.is_active:
+        return None
+    return user
 
 
 async def require_user(
@@ -163,6 +188,8 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     )
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다.")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="탈퇴한 계정입니다. 새 계정을 만들어 주세요.")
 
     token = create_access_token(user.id)
     return TokenResponse(access_token=token, user=UserPublic.model_validate(user))
@@ -195,6 +222,227 @@ async def clear_demo_user_data(
         )
     await db.execute(sa_delete(SubmissionRow).where(SubmissionRow.user_id == current_user.id))
     await db.execute(sa_delete(ProblemRow).where(ProblemRow.owner_id == current_user.id))
+    await db.commit()
+
+
+# ── Change password ───────────────────────────────────────────────────────────
+
+@app.post("/auth/change-password", status_code=200)
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: UserRow = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Change password for an authenticated user.
+
+    Checks:
+    - current_password must match stored hash
+    - new_password min 8 chars, max 72 bytes (bcrypt limit)
+    - new_password == confirm_new_password
+    - new_password must differ from current password
+    """
+    if not verify_password(body.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="현재 비밀번호가 올바르지 않습니다.")
+    if body.new_password != body.confirm_new_password:
+        raise HTTPException(status_code=400, detail="새 비밀번호와 확인 비밀번호가 일치하지 않습니다.")
+    if len(body.new_password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="비밀번호는 72바이트를 초과할 수 없습니다.")
+    if verify_password(body.new_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="새 비밀번호는 기존 비밀번호와 달라야 합니다.")
+    current_user.password_hash = hash_password(body.new_password)
+    await db.commit()
+    return {"message": "비밀번호가 변경되었습니다."}
+
+
+# ── Forgot / Reset password ───────────────────────────────────────────────────
+
+@app.post("/auth/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ForgotPasswordResponse:
+    """Request a password reset token.
+
+    Always returns a generic success message to prevent email enumeration.
+
+    DEV MODE (ENV != "production"):
+      - dev_token and dev_reset_url are included in the response body.
+        Copy the token and use it in the Reset Password page.
+    PRODUCTION MODE:
+      - TODO: send token via email (SMTP/SES/SendGrid — not implemented)
+      - Response body never includes the raw token.
+    """
+    generic_msg = "입력한 이메일 주소로 재설정 링크를 발송했습니다."
+    user = await db.scalar(
+        select(UserRow).where(UserRow.email == body.email.lower(), UserRow.is_active == True)
+    )
+    if user is None:
+        # Return same response regardless — prevents email enumeration
+        return ForgotPasswordResponse(message=generic_msg)
+
+    # Invalidate all pending tokens for this user
+    await db.execute(
+        sa_update(PasswordResetTokenRow)
+        .where(
+            PasswordResetTokenRow.user_id == user.id,
+            PasswordResetTokenRow.used_at.is_(None),
+        )
+        .values(used_at=datetime.now(timezone.utc))
+    )
+
+    # Generate new token
+    raw_token = generate_reset_token()
+    token_hash = hash_reset_token(raw_token)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
+    db.add(PasswordResetTokenRow(
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    ))
+    await db.commit()
+
+    is_production = os.getenv("ENV", "development").lower() == "production"
+    if is_production:
+        # TODO: send email with reset link (SMTP/SES/SendGrid not implemented)
+        return ForgotPasswordResponse(message=generic_msg)
+    else:
+        # DEV MODE: expose token in response for easy testing
+        return ForgotPasswordResponse(
+            message=f"[개발 모드] 실제 이메일 발송은 구현되지 않았습니다. 아래 토큰을 사용하세요.",
+            dev_token=raw_token,
+            dev_reset_url=f"/reset-password?token={raw_token}",
+        )
+
+
+@app.post("/auth/reset-password", status_code=200)
+async def reset_password(
+    body: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Reset password using a valid, unexpired, unused token."""
+    if body.new_password != body.confirm_new_password:
+        raise HTTPException(status_code=400, detail="새 비밀번호와 확인 비밀번호가 일치하지 않습니다.")
+    if len(body.new_password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="비밀번호는 72바이트를 초과할 수 없습니다.")
+
+    token_hash = hash_reset_token(body.token)
+    record = await db.scalar(
+        select(PasswordResetTokenRow).where(PasswordResetTokenRow.token_hash == token_hash)
+    )
+    now = datetime.now(timezone.utc)
+    if record is None:
+        raise HTTPException(status_code=400, detail="유효하지 않은 재설정 토큰입니다.")
+    if record.used_at is not None:
+        raise HTTPException(status_code=400, detail="이미 사용된 토큰입니다.")
+    if record.expires_at.replace(tzinfo=timezone.utc) < now:
+        raise HTTPException(status_code=400, detail="만료된 토큰입니다. 비밀번호 재설정을 다시 요청해주세요.")
+
+    # Update password and mark token as used
+    user = await db.get(UserRow, record.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=400, detail="계정을 찾을 수 없습니다.")
+    user.password_hash = hash_password(body.new_password)
+    record.used_at = now
+    await db.commit()
+    return {"message": "비밀번호가 재설정되었습니다. 새 비밀번호로 로그인해 주세요."}
+
+
+# ── Find account ──────────────────────────────────────────────────────────────
+
+@app.post("/auth/find-account", response_model=FindAccountResponse)
+async def find_account(
+    body: FindAccountRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FindAccountResponse:
+    """Find account by username or email (returns masked info to protect privacy)."""
+    not_found_msg = "입력하신 정보와 일치하는 계정을 찾을 수 없습니다."
+
+    if not body.email and not body.username:
+        raise HTTPException(status_code=400, detail="이메일 또는 사용자명 중 하나를 입력해주세요.")
+
+    if body.username:
+        user = await db.scalar(
+            select(UserRow).where(UserRow.username == body.username, UserRow.is_active == True)
+        )
+        if user is None:
+            return FindAccountResponse(message=not_found_msg)
+        return FindAccountResponse(
+            masked_email=mask_email(user.email),
+            message="계정을 찾았습니다.",
+        )
+
+    # Find by email
+    user = await db.scalar(
+        select(UserRow).where(UserRow.email == body.email.lower(), UserRow.is_active == True)
+    )
+    if user is None:
+        return FindAccountResponse(message=not_found_msg)
+    return FindAccountResponse(
+        username=user.username,
+        message="계정을 찾았습니다.",
+    )
+
+
+# ── Update profile ────────────────────────────────────────────────────────────
+
+@app.patch("/auth/me", response_model=UserPublic)
+async def update_profile(
+    body: UpdateProfileRequest,
+    current_user: UserRow = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserRow:
+    """Update the authenticated user's profile.
+
+    Only username can be changed. Email change requires real email verification
+    (not implemented — TODO).
+    """
+    if body.username == current_user.username:
+        return current_user  # No-op
+
+    conflict = await db.scalar(
+        select(UserRow).where(UserRow.username == body.username, UserRow.id != current_user.id)
+    )
+    if conflict:
+        raise HTTPException(status_code=409, detail="이미 사용 중인 사용자명입니다.")
+
+    current_user.username = body.username
+    await db.commit()
+    await db.refresh(current_user)
+    return current_user
+
+
+# ── Delete account (soft delete) ──────────────────────────────────────────────
+
+_CONFIRM_TEXTS = {"DELETE", "탈퇴합니다"}
+
+@app.delete("/auth/me", status_code=204)
+async def delete_account(
+    body: DeleteAccountRequest,
+    current_user: UserRow = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Soft-delete the authenticated user's account.
+
+    Protection gates (all must pass):
+    1. Password re-confirmation
+    2. confirm_text must be "DELETE" or "탈퇴합니다"
+
+    After deletion:
+    - is_active = False, deleted_at = now()
+    - JWT still exists on client but /auth/me returns 401 (is_active check)
+    - Submission history and problem data are preserved (soft delete)
+    """
+    if not verify_password(body.password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="비밀번호가 올바르지 않습니다.")
+    if body.confirm_text not in _CONFIRM_TEXTS:
+        raise HTTPException(
+            status_code=400,
+            detail='확인 문구로 "DELETE" 또는 "탈퇴합니다"를 정확히 입력해주세요.',
+        )
+
+    now = datetime.now(timezone.utc)
+    current_user.is_active = False
+    current_user.deleted_at = now
     await db.commit()
 
 

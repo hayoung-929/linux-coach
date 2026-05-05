@@ -109,6 +109,7 @@ class UserPublic(BaseModel):
     email: str
     username: str
     is_demo: bool = False
+    is_active: bool = True
     created_at: datetime
 
 
@@ -127,3 +128,60 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+# ── Change password ───────────────────────────────────────────────────────────
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8, max_length=72)
+    confirm_new_password: str
+
+
+# ── Forgot / Reset password ───────────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+    # Only populated in development mode (ENV != "production")
+    dev_token: Optional[str] = None
+    dev_reset_url: Optional[str] = None
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8, max_length=72)
+    confirm_new_password: str
+
+
+# ── Find account ──────────────────────────────────────────────────────────────
+
+class FindAccountRequest(BaseModel):
+    # Provide exactly one of: email or username
+    email: Optional[str] = None
+    username: Optional[str] = None
+
+
+class FindAccountResponse(BaseModel):
+    # When found by username → masked_email
+    # When found by email   → username
+    masked_email: Optional[str] = None
+    username: Optional[str] = None
+    message: str
+
+
+# ── Update profile ────────────────────────────────────────────────────────────
+
+class UpdateProfileRequest(BaseModel):
+    username: str = Field(..., min_length=2, max_length=80)
+
+
+# ── Delete account ────────────────────────────────────────────────────────────
+
+class DeleteAccountRequest(BaseModel):
+    password: str
+    # Must be "DELETE" or "탈퇴합니다"
+    confirm_text: str

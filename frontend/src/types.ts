@@ -108,7 +108,22 @@ export interface User {
   username: string;
   /** True only for the seeded demo account — used to clear data on logout */
   is_demo: boolean;
+  /** False after soft-delete; deactivated users cannot authenticate */
+  is_active: boolean;
   created_at: string;
+}
+
+export interface ForgotPasswordResponse {
+  message: string;
+  /** Only present in dev mode (ENV !== "production") */
+  dev_token?: string;
+  dev_reset_url?: string;
+}
+
+export interface FindAccountResponse {
+  masked_email?: string;
+  username?: string;
+  message: string;
 }
 
 export interface TokenResponse {

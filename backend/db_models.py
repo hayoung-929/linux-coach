@@ -15,6 +15,9 @@ class UserRow(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     # True only for the seeded demo account — used to clear data on logout
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Soft-delete: deactivated accounts cannot log in
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -23,6 +26,7 @@ class UserRow(Base):
 
     submissions: Mapped[list["SubmissionRow"]] = relationship(back_populates="user")
     problems: Mapped[list["ProblemRow"]] = relationship(back_populates="owner")
+    reset_tokens: Mapped[list["PasswordResetTokenRow"]] = relationship(back_populates="user")
 
 
 class ProblemRow(Base):
@@ -81,3 +85,30 @@ class SubmissionRow(Base):
 
     problem: Mapped["ProblemRow"] = relationship(back_populates="submissions")
     user: Mapped["UserRow | None"] = relationship(back_populates="submissions")
+
+
+class PasswordResetTokenRow(Base):
+    """One-time password reset tokens.
+
+    Security notes:
+    - token_hash stores SHA-256(token), never the raw token
+    - tokens expire after 30 minutes
+    - tokens are invalidated (used_at set) after one use
+    - creating a new token invalidates all existing pending tokens for the user
+    """
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    user: Mapped["UserRow"] = relationship(back_populates="reset_tokens")
