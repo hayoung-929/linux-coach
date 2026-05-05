@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import delete as sa_delete, func, or_, select, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE problems ADD COLUMN IF NOT EXISTS problem_type VARCHAR(20) DEFAULT 'command' NOT NULL",
             "ALTER TABLE problems ADD COLUMN IF NOT EXISTS quiz_type VARCHAR(20)",
             "ALTER TABLE problems ADD COLUMN IF NOT EXISTS choices TEXT",
+            # is_demo: identifies the seeded demo account (used for data cleanup on logout)
+            "ALTER TABLE users ADD COLUMN is_demo BOOLEAN NOT NULL DEFAULT FALSE",
         ]:
             try:
                 await conn.execute(text(stmt))
@@ -169,6 +171,31 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 @app.get("/auth/me", response_model=UserPublic)
 async def me(current_user: UserRow = Depends(require_user)):
     return current_user
+
+
+@app.delete("/auth/demo-data", status_code=204)
+async def clear_demo_user_data(
+    current_user: UserRow = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete all learning data for the demo account.
+
+    Forbidden for regular (non-demo) users — protects real user data.
+    Called by the frontend before the demo user logs out so they start
+    fresh on next login.
+
+    Deletes:
+    - All submissions by the demo user
+    - All AI-generated problems created by the demo user
+    """
+    if not current_user.is_demo:
+        raise HTTPException(
+            status_code=403,
+            detail="데모 계정에서만 사용 가능합니다. 일반 사용자 데이터는 삭제되지 않습니다.",
+        )
+    await db.execute(sa_delete(SubmissionRow).where(SubmissionRow.user_id == current_user.id))
+    await db.execute(sa_delete(ProblemRow).where(ProblemRow.owner_id == current_user.id))
+    await db.commit()
 
 
 # ── Problems ──────────────────────────────────────────────────────────────────

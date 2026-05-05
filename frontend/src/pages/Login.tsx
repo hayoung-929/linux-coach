@@ -175,8 +175,11 @@ export default function Login() {
           </form>
         </div>
 
-        <p className="mt-4 text-center text-2xs text-ink-700">
-          현재 회원가입은 비활성화되어 있어요. 데모 계정으로 시작해보세요.
+        <p className="mt-4 text-center text-2xs text-ink-600">
+          계정이 없으신가요?{" "}
+          <Link to="/register" className="text-sky-400 hover:text-sky-300 transition-colors no-underline">
+            회원가입
+          </Link>
         </p>
       </div>
     </div>

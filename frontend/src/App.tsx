@@ -8,6 +8,7 @@ import ProblemDetail from "./pages/ProblemDetail";
 import ProblemList from "./pages/ProblemList";
 import Profile from "./pages/Profile";
 import QuizMode from "./pages/QuizMode";
+import Register from "./pages/Register";
 import Settings from "./pages/Settings";
 import Stats from "./pages/Stats";
 import WrongNotes from "./pages/WrongNotes";
@@ -18,6 +19,7 @@ export default function App() {
       <Routes>
         {/* Public auth pages (no AppShell) */}
         <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
 
         {/* App shell wraps all app pages */}
         <Route element={<AppShell />}>

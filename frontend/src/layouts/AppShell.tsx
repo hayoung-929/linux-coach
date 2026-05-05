@@ -169,8 +169,8 @@ export default function AppShell() {
     setMobileOpen(false);
   }, [pathname]);
 
-  function handleLogout() {
-    logout();
+  async function handleLogout() {
+    await logout();
     navigate("/login");
   }
 

@@ -106,6 +106,8 @@ export interface User {
   id: number;
   email: string;
   username: string;
+  /** True only for the seeded demo account — used to clear data on logout */
+  is_demo: boolean;
   created_at: string;
 }
 

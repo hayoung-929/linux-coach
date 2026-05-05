@@ -108,6 +108,7 @@ class UserPublic(BaseModel):
     id: int
     email: str
     username: str
+    is_demo: bool = False
     created_at: datetime
 
 
