@@ -80,13 +80,50 @@ export interface AppConfig {
   mode: "ai" | "free";
   provider: string;
   label: string;
+  ai_enabled: boolean;
+  ai_mode: string;
+  demo_email?: string | null;
+  demo_password?: string | null;
+}
+
+export interface ProfileData {
+  user: User;
+  stats: {
+    total_submissions: number;
+    correct_count: number;
+    wrong_count: number;
+    accuracy: number;
+    created_problem_count: number;
+  };
+  weak_categories: CategoryStat[];
+  weak_concepts: { concept: string; wrong: number }[];
+  recent_wrong_notes: WrongNote[];
+  ai_mode: string;
+  ai_enabled: boolean;
 }
 
 export interface User {
   id: number;
   email: string;
   username: string;
+  /** True only for the seeded demo account — used to clear data on logout */
+  is_demo: boolean;
+  /** False after soft-delete; deactivated users cannot authenticate */
+  is_active: boolean;
   created_at: string;
+}
+
+export interface ForgotPasswordResponse {
+  message: string;
+  /** Only present in dev mode (ENV !== "production") */
+  dev_token?: string;
+  dev_reset_url?: string;
+}
+
+export interface FindAccountResponse {
+  masked_email?: string;
+  username?: string;
+  message: string;
 }
 
 export interface TokenResponse {

@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { API_URL } from "../api";
+import { API_URL, fetchAppConfig } from "../api";
 import { useAuth } from "../context/AuthContext";
-import type { TokenResponse } from "../types";
+import type { AppConfig, TokenResponse } from "../types";
 
 export default function Login() {
   const { login } = useAuth();
@@ -14,26 +14,20 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [cfg, setCfg] = useState<AppConfig | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  useEffect(() => {
+    fetchAppConfig().then(setCfg);
+  }, []);
+
+  async function doLogin(em: string, pw: string) {
     setError("");
-
-    if (!email.includes("@")) {
-      setError("올바른 이메일 형식을 입력해주세요.");
-      return;
-    }
-    if (password.length < 1) {
-      setError("비밀번호를 입력해주세요.");
-      return;
-    }
-
     setLoading(true);
     try {
       const r = await fetch(`${API_URL}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: em, password: pw }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -48,6 +42,27 @@ export default function Login() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleDemoLogin() {
+    if (cfg?.demo_email && cfg?.demo_password) {
+      doLogin(cfg.demo_email, cfg.demo_password);
+    } else {
+      doLogin("demo@linuxcoach.local", "demo1234");
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.includes("@")) {
+      setError("올바른 이메일 형식을 입력해주세요.");
+      return;
+    }
+    if (password.length < 1) {
+      setError("비밀번호를 입력해주세요.");
+      return;
+    }
+    await doLogin(email, password);
   }
 
   return (
@@ -65,11 +80,57 @@ export default function Login() {
           </Link>
         </div>
 
+        {/* Mode badge */}
+        {cfg && (
+          <div className="mb-3 flex justify-center">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-2xs font-medium ${
+                cfg.ai_enabled
+                  ? "border-sky-500/25 bg-sky-500/5 text-sky-400"
+                  : "border-amber-500/25 bg-amber-500/5 text-amber-400"
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${cfg.ai_enabled ? "bg-sky-500" : "bg-amber-500"}`} />
+              {cfg.ai_mode}
+            </span>
+          </div>
+        )}
+
         {/* Card */}
         <div className="rounded-xl border border-ink-800 bg-ink-900 p-6">
           <div className="mb-5">
             <h1 className="text-base font-semibold text-ink-100">로그인</h1>
             <p className="mt-0.5 text-xs text-ink-600">계정에 로그인하여 학습을 이어가세요</p>
+          </div>
+
+          {/* Demo quick start */}
+          <button
+            type="button"
+            onClick={handleDemoLogin}
+            disabled={loading}
+            className="mb-3 w-full rounded-md border border-sky-500/30 bg-sky-500/5 px-4 py-2.5 text-sm font-medium text-sky-300 hover:bg-sky-500/10 hover:border-sky-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <span className="flex items-center justify-center gap-2">
+              <span>⚡</span>
+              데모 계정으로 빠른 시작
+            </span>
+          </button>
+          <p className="mb-4 text-center text-2xs text-ink-600">
+            처음이신가요? 회원가입 없이 즉시 체험할 수 있어요
+          </p>
+          <div className="mb-3 flex justify-center gap-3 text-2xs">
+            <Link to="/find-account" className="text-ink-600 hover:text-ink-300 transition-colors no-underline">계정 찾기</Link>
+            <span className="text-ink-800">·</span>
+            <Link to="/forgot-password" className="text-ink-600 hover:text-ink-300 transition-colors no-underline">비밀번호 찾기</Link>
+          </div>
+
+          <div className="relative my-3">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-ink-800" />
+            </div>
+            <div className="relative flex justify-center">
+              <span className="bg-ink-900 px-2 text-2xs text-ink-700">또는 직접 로그인</span>
+            </div>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-3">
@@ -119,9 +180,9 @@ export default function Login() {
           </form>
         </div>
 
-        <p className="mt-4 text-center text-xs text-ink-600">
+        <p className="mt-4 text-center text-2xs text-ink-600">
           계정이 없으신가요?{" "}
-          <Link to="/register" className="text-ink-300 hover:text-white transition-colors font-medium">
+          <Link to="/register" className="text-sky-400 hover:text-sky-300 transition-colors no-underline">
             회원가입
           </Link>
         </p>

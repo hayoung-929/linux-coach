@@ -38,6 +38,28 @@ async def seed_if_empty(db: AsyncSession) -> None:
     await db.commit()
 
 
+async def seed_demo_user_if_missing(db: AsyncSession) -> None:
+    """Create a demo account so users can log in without registering.
+
+    Idempotent: skips creation if already present.
+    Also upgrades existing demo users that have is_demo=False (migration safety).
+    """
+    existing = await db.scalar(select(UserRow).where(UserRow.email == DEMO_EMAIL))
+    if existing is not None:
+        # Backfill is_demo flag in case this is an older row created before the column existed
+        if not existing.is_demo:
+            existing.is_demo = True
+            await db.commit()
+        return
+    db.add(UserRow(
+        email=DEMO_EMAIL,
+        username=DEMO_USERNAME,
+        password_hash=hash_password(DEMO_PASSWORD),
+        is_demo=True,
+    ))
+    await db.commit()
+
+
 async def merge_new_seed_problems(db: AsyncSession) -> None:
     """Insert any built-in problems not yet in the DB (idempotent by title+category+difficulty)."""
     result = await db.execute(select(ProblemRow))

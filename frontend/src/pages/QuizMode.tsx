@@ -188,8 +188,8 @@ function QuizCard({
           </span>
         </div>
 
-        <div className="px-4 py-4 space-y-4">
-          <p className="text-sm text-ink-200 leading-relaxed">{problem.question}</p>
+        <div className="px-5 py-5 space-y-5">
+          <p className="text-base text-ink-100 leading-relaxed font-medium">{problem.question}</p>
 
           {/* MC choices */}
           {quizType === "mc" && (
@@ -302,20 +302,24 @@ function QuizCard({
 
       {/* Feedback */}
       {result && (
-        <div className={`rounded-lg border px-4 py-3 space-y-2 ${
-          result.is_correct ? "border-emerald-500/20 bg-emerald-500/5" : "border-red-500/20 bg-red-500/5"
+        <div className={`rounded-lg border px-5 py-4 space-y-3 ${
+          result.is_correct ? "border-emerald-500/25 bg-emerald-500/5" : "border-red-500/25 bg-red-500/5"
         }`}>
-          <div className="flex items-center gap-2">
-            <span className={`text-sm font-medium ${result.is_correct ? "text-emerald-300" : "text-red-300"}`}>
-              {result.is_correct ? "✓ 정답!" : "✗ 오답"}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${result.is_correct ? "text-emerald-300" : "text-red-300"}`}>
+              <span className="text-base">{result.is_correct ? "✓" : "✗"}</span>
+              {result.is_correct ? "정답입니다!" : "오답입니다"}
             </span>
             {!result.is_correct && result.correct_answer && (
-              <span className="text-xs text-ink-500">
-                정답: <span className="font-mono text-ink-300">{result.correct_answer}</span>
+              <span className="text-xs text-ink-400 ml-1">
+                정답: <span className="font-mono font-medium text-ink-200">{result.correct_answer}</span>
               </span>
             )}
           </div>
-          <p className="text-xs text-ink-500 leading-relaxed">{problem.concept}</p>
+          <div className="rounded border border-ink-800/60 bg-ink-950/40 p-3">
+            <p className="text-2xs font-semibold uppercase tracking-wider text-ink-600 mb-1.5">개념 설명</p>
+            <p className="text-xs text-ink-300 leading-relaxed">{problem.concept}</p>
+          </div>
         </div>
       )}
     </div>

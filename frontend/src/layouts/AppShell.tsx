@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { API_URL, fetchAppConfig } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { coachModeLabel, resolveCoachMode } from "../lib/guestStore";
 import type { AppConfig } from "../types";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -44,10 +45,26 @@ function IconChart() {
     </svg>
   );
 }
+function IconSettings() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  );
+}
 function IconPuzzle() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-3.408 0l-1.569-1.567a.881.881 0 0 0-.878-.29c-.493.116-.881.56-.914 1.066a2.5 2.5 0 1 1-3.476-3.476c.507-.033.95-.421 1.067-.914a.881.881 0 0 0-.29-.878L4.28 13.28a2.404 2.404 0 0 1 0-3.408l1.568-1.569a.881.881 0 0 0 .29-.878C6.022 6.932 5.579 6.49 5.072 6.457a2.5 2.5 0 1 1 3.476-3.476c-.033.507.421.95.914 1.067a.881.881 0 0 0 .878-.29l1.568-1.568a2.404 2.404 0 0 1 3.408 0l1.569 1.567c.23.231.556.339.878.29.493-.116.881-.56.914-1.066a2.5 2.5 0 0 1 .729 4.229z"/>
+    </svg>
+  );
+}
+function IconUser() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
     </svg>
   );
 }
@@ -89,8 +106,10 @@ const NAV = [
   { to: "/problems", icon: IconList, label: "문제 목록", end: false },
   { to: "/quiz", icon: IconPuzzle, label: "개념 퀴즈", end: false },
   { to: "/generate", icon: IconSparkle, label: "문제 생성", end: false, auth: true },
-  { to: "/wrong-notes", icon: IconBookmark, label: "오답노트", end: false, auth: true },
-  { to: "/stats", icon: IconChart, label: "통계", end: false, auth: true },
+  { to: "/wrong-notes", icon: IconBookmark, label: "오답노트", end: false },
+  { to: "/stats", icon: IconChart, label: "통계", end: false },
+  { to: "/profile", icon: IconUser, label: "프로필", end: false, auth: true },
+  { to: "/settings", icon: IconSettings, label: "설정", end: false },
 ];
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -150,8 +169,8 @@ export default function AppShell() {
     setMobileOpen(false);
   }, [pathname]);
 
-  function handleLogout() {
-    logout();
+  async function handleLogout() {
+    await logout();
     navigate("/login");
   }
 
@@ -182,31 +201,49 @@ export default function AppShell() {
 
       {/* Footer */}
       <div className="border-t border-ink-800 p-3 space-y-2">
+        {/* Coach mode badge */}
+        {cfg && (() => {
+          const m = resolveCoachMode(cfg.ai_enabled);
+          const label = coachModeLabel(m);
+          const dot = m === "user_ai" ? "bg-sky-500" : m === "admin_ai" ? "bg-emerald-500" : "bg-amber-500";
+          const text = m === "user_ai" ? "text-sky-400" : m === "admin_ai" ? "text-emerald-400" : "text-amber-400";
+          return (
+            <Link
+              to="/settings"
+              className="flex items-center gap-2 px-1 rounded py-1 hover:bg-ink-800/40 transition-colors no-underline"
+              title="설정에서 코치 모드를 바꿀 수 있어요"
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+              <span className={`text-2xs font-medium ${text}`}>{label}</span>
+              <span className="ml-auto text-2xs text-ink-700">
+                {user ? "" : "Guest"}
+              </span>
+            </Link>
+          );
+        })()}
+
         {/* API status */}
         <div className="flex items-center gap-2 px-1">
           <span
-            className={`h-1.5 w-1.5 rounded-full ${
+            className={`h-1 w-1 rounded-full ${
               health === "ok" ? "bg-emerald-500" : health === "down" ? "bg-red-500" : "bg-ink-600"
             }`}
           />
-          <span className="text-2xs text-ink-600">
-            API {health === "ok" ? "연결됨" : health === "down" ? "오프라인" : "확인 중"}
+          <span className="text-2xs text-ink-700">
+            서버 {health === "ok" ? "연결됨" : health === "down" ? "오프라인" : "확인 중"}
           </span>
-          {cfg && (
-            <span className={`ml-auto text-2xs font-medium ${cfg.mode === "ai" ? "text-sky-400" : "text-amber-400"}`}>
-              {cfg.label}
-            </span>
-          )}
         </div>
 
         {/* User info */}
         {user ? (
           <div className="flex items-center gap-2 rounded-md px-1 py-1">
-            <UserBadge username={user.username} />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-ink-200 truncate">{user.username}</p>
-              <p className="text-2xs text-ink-600 truncate">{user.email}</p>
-            </div>
+            <Link to="/profile" className="flex items-center gap-2 flex-1 min-w-0 hover:bg-ink-800/40 rounded p-1 -m-1 transition-colors no-underline">
+              <UserBadge username={user.username} />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-ink-200 truncate">{user.username}</p>
+                <p className="text-2xs text-ink-600 truncate">{user.email}</p>
+              </div>
+            </Link>
             <button
               type="button"
               onClick={handleLogout}
@@ -267,17 +304,20 @@ export default function AppShell() {
             {mobileOpen ? <IconX /> : <IconMenu />}
           </button>
           <span className="text-sm font-semibold text-ink-100">Linux Coach</span>
-          {cfg && (
-            <span
-              className={`ml-auto text-2xs font-semibold px-2 py-0.5 rounded border ${
-                cfg.mode === "ai"
-                  ? "border-sky-500/25 text-sky-400"
-                  : "border-amber-500/25 text-amber-400"
-              }`}
-            >
-              {cfg.label}
-            </span>
-          )}
+          {cfg && (() => {
+            const m = resolveCoachMode(cfg.ai_enabled);
+            const label = coachModeLabel(m);
+            const cls = m === "user_ai"
+              ? "border-sky-500/25 text-sky-400"
+              : m === "admin_ai"
+              ? "border-emerald-500/25 text-emerald-400"
+              : "border-amber-500/25 text-amber-400";
+            return (
+              <span className={`ml-auto text-2xs font-semibold px-2 py-0.5 rounded border ${cls}`}>
+                {label}
+              </span>
+            );
+          })()}
           {user && (
             <UserBadge username={user.username} />
           )}

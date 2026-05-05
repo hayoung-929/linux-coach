@@ -1,13 +1,18 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AppShell from "./layouts/AppShell";
+import FindAccount from "./pages/FindAccount";
+import ForgotPassword from "./pages/ForgotPassword";
 import GenerateProblems from "./pages/GenerateProblems";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import ProblemDetail from "./pages/ProblemDetail";
 import ProblemList from "./pages/ProblemList";
+import Profile from "./pages/Profile";
 import QuizMode from "./pages/QuizMode";
 import Register from "./pages/Register";
+import ResetPassword from "./pages/ResetPassword";
+import Settings from "./pages/Settings";
 import Stats from "./pages/Stats";
 import WrongNotes from "./pages/WrongNotes";
 
@@ -18,6 +23,9 @@ export default function App() {
         {/* Public auth pages (no AppShell) */}
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/find-account" element={<FindAccount />} />
 
         {/* App shell wraps all app pages */}
         <Route element={<AppShell />}>
@@ -26,12 +34,14 @@ export default function App() {
           <Route path="/problems" element={<ProblemList />} />
           <Route path="/problems/:id" element={<ProblemDetail />} />
           <Route path="/quiz" element={<QuizMode />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/wrong-notes" element={<WrongNotes />} />
+          <Route path="/stats" element={<Stats />} />
 
           {/* Requires login */}
           <Route element={<ProtectedRoute />}>
+            <Route path="/profile" element={<Profile />} />
             <Route path="/generate" element={<GenerateProblems />} />
-            <Route path="/wrong-notes" element={<WrongNotes />} />
-            <Route path="/stats" element={<Stats />} />
           </Route>
         </Route>
       </Routes>

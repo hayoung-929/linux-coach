@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { API_URL, apiFetch } from "../api";
 import { CATEGORY_CONFIG } from "../constants";
 import { useAuth } from "../context/AuthContext";
+import { computeGuestStats, GuestStats } from "../lib/guestStore";
 import type { AnalysisData, StatsData } from "../types";
 
 const FEATURES = [
@@ -56,6 +57,7 @@ export default function Home() {
   const { user } = useAuth();
   const [stats, setStats] = useState<StatsData | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
+  const [guest, setGuest] = useState<GuestStats | null>(null);
   const [health, setHealth] = useState<"loading" | "ok" | "error">("loading");
 
   useEffect(() => {
@@ -72,6 +74,8 @@ export default function Home() {
         .then((r) => (r.ok ? r.json() : Promise.reject()))
         .then(setAnalysis)
         .catch(() => {});
+    } else {
+      setGuest(computeGuestStats());
     }
   }, [user]);
 
@@ -116,10 +120,10 @@ export default function Home() {
           </Link>
           {!user && (
             <Link
-              to="/register"
+              to="/quiz"
               className="inline-flex items-center gap-2 rounded-md border border-ink-700 px-4 py-2 text-sm font-medium text-ink-300 hover:border-ink-500 hover:text-white transition-colors no-underline"
             >
-              무료 가입
+              퀴즈 풀기
             </Link>
           )}
         </div>
@@ -142,6 +146,90 @@ export default function Home() {
               </div>
             ))}
           </div>
+        </section>
+      )}
+
+      {/* Guest dashboard (when not logged in & has activity) */}
+      {!user && guest && guest.total_submissions > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-medium uppercase tracking-widest text-ink-600">Guest 학습 현황</p>
+            <span className="text-2xs text-ink-700 italic">이 브라우저에 저장됨</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {[
+              { label: "오늘 풀이", value: guest.today_solved, hi: guest.today_solved > 0 },
+              { label: "연속 일수", value: `${guest.streak_days}일`, hi: guest.streak_days > 0 },
+              { label: "총 제출", value: guest.total_submissions },
+              { label: "정답률", value: `${guest.accuracy}%` },
+              { label: "답 본 문제", value: guest.viewed_answer_count },
+            ].map((c) => (
+              <div key={c.label} className="rounded-lg border border-ink-800 bg-ink-900 p-3">
+                <p className={`text-xl font-semibold tabular-nums ${c.hi ? "text-emerald-400" : "text-white"}`}>
+                  {c.value}
+                </p>
+                <p className="mt-0.5 text-2xs text-ink-600">{c.label}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Guest weak categories */}
+      {!user && guest && guest.weak_categories.length > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-medium uppercase tracking-widest text-ink-600">내 약점 카테고리</p>
+            <Link to="/quiz" className="text-2xs text-sky-500 hover:text-sky-400 no-underline">퀴즈로 보완 →</Link>
+          </div>
+          <div className="rounded-lg border border-ink-800 bg-ink-900 divide-y divide-ink-800">
+            {guest.weak_categories.map((c) => {
+              const cfg = CATEGORY_CONFIG[c.category as keyof typeof CATEGORY_CONFIG];
+              const pct = Math.round(c.wrong_rate * 100);
+              return (
+                <div key={c.category} className="flex items-center gap-3 px-4 py-3">
+                  <span className={`text-xs font-medium ${cfg?.tw.split(" ")[0] ?? "text-ink-400"} w-16 shrink-0`}>
+                    {cfg?.label ?? c.category}
+                  </span>
+                  <div className="flex-1 h-1.5 rounded-full bg-ink-800 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${pct >= 70 ? "bg-red-500" : pct >= 40 ? "bg-amber-500" : "bg-emerald-500"}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <span className="text-2xs tabular-nums text-ink-500 w-16 text-right shrink-0">
+                    {c.wrong}/{c.total} ({pct}%)
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Recent wrong (guest) */}
+      {!user && guest && guest.recent_wrong.length > 0 && (
+        <section>
+          <p className="mb-3 text-xs font-medium uppercase tracking-widest text-ink-600">최근 오답</p>
+          <ul className="rounded-lg border border-ink-800 bg-ink-900 divide-y divide-ink-800">
+            {guest.recent_wrong.slice(0, 3).map((w) => {
+              const cfg = CATEGORY_CONFIG[w.category as keyof typeof CATEGORY_CONFIG];
+              return (
+                <li key={`${w.problem_id}-${w.submitted_at}`}>
+                  <Link
+                    to={`/problems/${w.problem_id}`}
+                    className="flex items-center gap-3 px-4 py-3 no-underline hover:bg-ink-800/30 transition-colors"
+                  >
+                    <span className={`shrink-0 inline-flex rounded border px-1.5 py-0.5 text-2xs font-medium ${cfg?.tw ?? "text-ink-400 border-ink-700"}`}>
+                      {cfg?.label ?? w.category}
+                    </span>
+                    <span className="flex-1 text-sm text-ink-200 truncate">{w.problem_title}</span>
+                    <span className="shrink-0 font-mono text-2xs text-red-400 truncate max-w-[140px]">{w.user_answer}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
         </section>
       )}
 
