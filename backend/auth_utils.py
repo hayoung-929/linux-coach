@@ -8,23 +8,26 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt as _bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 # TODO: switch to httpOnly cookie transport in production
 SECRET_KEY = os.getenv("JWT_SECRET", "dev-secret-key-CHANGE-THIS-IN-PRODUCTION")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
-_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def hash_password(plain: str) -> str:
-    return _pwd.hash(plain)
+    """Return a bcrypt hash of *plain*.  Works with bcrypt 4.x (passlib-free)."""
+    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return _pwd.verify(plain, hashed)
+    """Return True if *plain* matches the stored *hashed* value."""
+    try:
+        return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 
 def create_access_token(user_id: int) -> str:

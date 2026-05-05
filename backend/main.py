@@ -64,25 +64,33 @@ from seed import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create tables that don't exist yet (safe for existing tables)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Idempotent column additions for rolling upgrades
-        for stmt in [
-            "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
-            "ALTER TABLE problems ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
-            "ALTER TABLE problems ADD COLUMN IF NOT EXISTS problem_type VARCHAR(20) DEFAULT 'command' NOT NULL",
-            "ALTER TABLE problems ADD COLUMN IF NOT EXISTS quiz_type VARCHAR(20)",
-            "ALTER TABLE problems ADD COLUMN IF NOT EXISTS choices TEXT",
-            # is_demo: identifies the seeded demo account (used for data cleanup on logout)
-            "ALTER TABLE users ADD COLUMN is_demo BOOLEAN NOT NULL DEFAULT FALSE",
-            # Soft-delete support
-            "ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE",
-            "ALTER TABLE users ADD COLUMN deleted_at DATETIME",
-        ]:
-            try:
+
+    # Each migration statement runs in its own transaction so a failure in one
+    # does not roll back the others.  All statements use IF NOT EXISTS so they
+    # are idempotent across restarts.
+    # NOTE: PostgreSQL does not support DATETIME — use TIMESTAMP WITH TIME ZONE.
+    migration_stmts = [
+        "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
+        "ALTER TABLE problems ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
+        "ALTER TABLE problems ADD COLUMN IF NOT EXISTS problem_type VARCHAR(20) DEFAULT 'command' NOT NULL",
+        "ALTER TABLE problems ADD COLUMN IF NOT EXISTS quiz_type VARCHAR(20)",
+        "ALTER TABLE problems ADD COLUMN IF NOT EXISTS choices TEXT",
+        # is_demo: identifies the seeded demo account (used for data cleanup on logout)
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE",
+        # Soft-delete support
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE",
+    ]
+    for stmt in migration_stmts:
+        try:
+            async with engine.begin() as conn:
                 await conn.execute(text(stmt))
-            except Exception:
-                pass
+        except Exception:
+            pass
+
     async with AsyncSessionLocal() as db:
         await seed_if_empty(db)
         await merge_new_seed_problems(db)
