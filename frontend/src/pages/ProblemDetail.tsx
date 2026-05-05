@@ -17,6 +17,19 @@ interface RevealData {
   concept: string;
   hint: string;
 }
+type Category =
+  | "file"
+  | "directory"
+  | "permission"
+  | "process"
+  | "network"
+  | "package"
+  | "service"
+  | "search"
+  | "compression"
+  | "environment"
+
+type Difficulty = "beginner" | "easy" | "medium" | "hard";
 
 interface RecommendItem {
   id: number;
