@@ -10,7 +10,7 @@ import {
   recordGuestSubmission,
   resolveCoachMode,
 } from "../lib/guestStore";
-import type { AppConfig, Problem, SubmitResult } from "../types";
+import type { AppConfig, Category, Difficulty, Problem, SubmitResult } from "../types";
 
 interface RevealData {
   answer: string;
@@ -408,8 +408,12 @@ export default function ProblemDetail() {
           </div>
           <ul className="space-y-2">
             {recommendations.map((r) => {
-              const rcat = CATEGORY_CONFIG[r.category] ?? { label: r.category, tw: "text-ink-400 border-ink-700" };
-              const rdiff = DIFFICULTY_CONFIG[r.difficulty] ?? DIFFICULTY_CONFIG.easy;
+              const rcat =
+                CATEGORY_CONFIG[r.category as Category] ??
+                ({ label: r.category, icon: "📘", tw: "text-ink-400 border-ink-700" } as (typeof CATEGORY_CONFIG)[Category]);
+              const rdiff =
+                DIFFICULTY_CONFIG[r.difficulty as Difficulty] ??
+                DIFFICULTY_CONFIG.easy;
               return (
                 <li key={r.id}>
                   <Link
