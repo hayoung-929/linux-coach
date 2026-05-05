@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { API_URL, fetchAppConfig } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { coachModeLabel, resolveCoachMode } from "../lib/guestStore";
 import type { AppConfig } from "../types";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -41,6 +42,14 @@ function IconChart() {
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
       <line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/>
+    </svg>
+  );
+}
+function IconSettings() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
     </svg>
   );
 }
@@ -97,9 +106,10 @@ const NAV = [
   { to: "/problems", icon: IconList, label: "문제 목록", end: false },
   { to: "/quiz", icon: IconPuzzle, label: "개념 퀴즈", end: false },
   { to: "/generate", icon: IconSparkle, label: "문제 생성", end: false, auth: true },
-  { to: "/wrong-notes", icon: IconBookmark, label: "오답노트", end: false, auth: true },
-  { to: "/stats", icon: IconChart, label: "통계", end: false, auth: true },
+  { to: "/wrong-notes", icon: IconBookmark, label: "오답노트", end: false },
+  { to: "/stats", icon: IconChart, label: "통계", end: false },
   { to: "/profile", icon: IconUser, label: "프로필", end: false, auth: true },
+  { to: "/settings", icon: IconSettings, label: "설정", end: false },
 ];
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -191,24 +201,37 @@ export default function AppShell() {
 
       {/* Footer */}
       <div className="border-t border-ink-800 p-3 space-y-2">
+        {/* Coach mode badge */}
+        {cfg && (() => {
+          const m = resolveCoachMode(cfg.ai_enabled);
+          const label = coachModeLabel(m);
+          const dot = m === "user_ai" ? "bg-sky-500" : m === "admin_ai" ? "bg-emerald-500" : "bg-amber-500";
+          const text = m === "user_ai" ? "text-sky-400" : m === "admin_ai" ? "text-emerald-400" : "text-amber-400";
+          return (
+            <Link
+              to="/settings"
+              className="flex items-center gap-2 px-1 rounded py-1 hover:bg-ink-800/40 transition-colors no-underline"
+              title="설정에서 코치 모드를 바꿀 수 있어요"
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+              <span className={`text-2xs font-medium ${text}`}>{label}</span>
+              <span className="ml-auto text-2xs text-ink-700">
+                {user ? "" : "Guest"}
+              </span>
+            </Link>
+          );
+        })()}
+
         {/* API status */}
         <div className="flex items-center gap-2 px-1">
           <span
-            className={`h-1.5 w-1.5 rounded-full ${
+            className={`h-1 w-1 rounded-full ${
               health === "ok" ? "bg-emerald-500" : health === "down" ? "bg-red-500" : "bg-ink-600"
             }`}
           />
-          <span className="text-2xs text-ink-600">
-            API {health === "ok" ? "연결됨" : health === "down" ? "오프라인" : "확인 중"}
+          <span className="text-2xs text-ink-700">
+            서버 {health === "ok" ? "연결됨" : health === "down" ? "오프라인" : "확인 중"}
           </span>
-          {cfg && (
-            <span
-              className={`ml-auto text-2xs font-medium ${cfg.ai_enabled ? "text-sky-400" : "text-amber-400"}`}
-              title={cfg.ai_enabled ? "AI Mode 활성화됨" : "Free Rule Mode — 내장 규칙 코치"}
-            >
-              {cfg.ai_mode ?? cfg.label}
-            </span>
-          )}
         </div>
 
         {/* User info */}
@@ -281,17 +304,20 @@ export default function AppShell() {
             {mobileOpen ? <IconX /> : <IconMenu />}
           </button>
           <span className="text-sm font-semibold text-ink-100">Linux Coach</span>
-          {cfg && (
-            <span
-              className={`ml-auto text-2xs font-semibold px-2 py-0.5 rounded border ${
-                cfg.mode === "ai"
-                  ? "border-sky-500/25 text-sky-400"
-                  : "border-amber-500/25 text-amber-400"
-              }`}
-            >
-              {cfg.label}
-            </span>
-          )}
+          {cfg && (() => {
+            const m = resolveCoachMode(cfg.ai_enabled);
+            const label = coachModeLabel(m);
+            const cls = m === "user_ai"
+              ? "border-sky-500/25 text-sky-400"
+              : m === "admin_ai"
+              ? "border-emerald-500/25 text-emerald-400"
+              : "border-amber-500/25 text-amber-400";
+            return (
+              <span className={`ml-auto text-2xs font-semibold px-2 py-0.5 rounded border ${cls}`}>
+                {label}
+              </span>
+            );
+          })()}
           {user && (
             <UserBadge username={user.username} />
           )}

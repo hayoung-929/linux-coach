@@ -9,10 +9,36 @@ async def generate_feedback(
     question: str,
     user_answer: str,
     category: str,
+    difficulty: str = "easy",
+    user_provider: str | None = None,
+    user_api_key: str | None = None,
 ) -> str:
+    """Resolve coach feedback in priority order:
+
+    1. User-supplied API key (User AI Mode) — overrides server keys.
+    2. Server API keys (Admin AI Mode).
+    3. Rule-based question-style coach (Free Rule Mode).
+    """
+    if user_api_key:
+        try:
+            if user_provider == "openai":
+                return await generate_openai_feedback(problem_title, question, user_answer, api_key=user_api_key)
+            if user_provider == "gemini":
+                return await generate_gemini_feedback(problem_title, question, user_answer, api_key=user_api_key)
+        except Exception:
+            # Any failure → quietly fall back to rule-based coach
+            pass
+
     provider = cloud_ai_provider()
     if provider == "openai":
-        return await generate_openai_feedback(problem_title, question, user_answer)
+        try:
+            return await generate_openai_feedback(problem_title, question, user_answer)
+        except Exception:
+            pass
     if provider == "gemini":
-        return await generate_gemini_feedback(problem_title, question, user_answer)
-    return generate_rule_feedback(category, problem_title, question, user_answer)
+        try:
+            return await generate_gemini_feedback(problem_title, question, user_answer)
+        except Exception:
+            pass
+
+    return generate_rule_feedback(category, problem_title, question, user_answer, difficulty)

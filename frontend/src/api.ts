@@ -1,3 +1,4 @@
+import { getUserAIKey } from "./lib/guestStore";
 import type { AppConfig } from "./types";
 
 // Docker: VITE_API_URL=/api  → nginx proxies /api/* to backend:8000/*
@@ -23,13 +24,22 @@ export function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-// ── Fetch wrapper (always sends auth token if present) ────────────────────────
+function aiKeyHeaders(): Record<string, string> {
+  const { provider, key } = getUserAIKey();
+  if (provider && key) {
+    return { "X-AI-Provider": provider, "X-AI-Key": key };
+  }
+  return {};
+}
+
+// ── Fetch wrapper (always sends auth token + optional user AI key) ────────────
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       ...authHeaders(),
+      ...aiKeyHeaders(),
       ...(init.headers ?? {}),
     },
   });

@@ -28,8 +28,12 @@ async def generate_openai_feedback(
     problem_title: str,
     question: str,
     user_answer: str,
+    api_key: str | None = None,
 ) -> str:
-    client = _get_openai()
+    if api_key:
+        client = AsyncOpenAI(api_key=api_key)
+    else:
+        client = _get_openai()
     if client is None:
         return _FALLBACK
 

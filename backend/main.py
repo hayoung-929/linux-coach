@@ -2,7 +2,7 @@ import json
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -227,14 +227,21 @@ class SubmitResponse(BaseModel):
 async def submit_answer(
     problem_id: int,
     body: SubmitRequest,
-    current_user: UserRow = Depends(require_user),
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[UserRow] = Depends(get_current_user_optional),
+    x_ai_provider: Optional[str] = Header(default=None, alias="X-AI-Provider"),
+    x_ai_key: Optional[str] = Header(default=None, alias="X-AI-Key"),
 ):
+    """Grade an answer. Auth is optional — guests get graded + feedback but
+    nothing is persisted to the DB (the frontend stores guest history in
+    localStorage)."""
     row = await db.get(ProblemRow, problem_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Problem not found")
-    if row.owner_id is not None and row.owner_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Problem not found")
+    # User-owned problems are only visible to the owner
+    if row.owner_id is not None:
+        if current_user is None or row.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Problem not found")
 
     is_ok = grade(body.user_answer, row.answer, quiz_type=row.quiz_type)
 
@@ -245,18 +252,22 @@ async def submit_answer(
             question=row.question,
             user_answer=body.user_answer,
             category=row.category,
+            difficulty=row.difficulty,
+            user_provider=x_ai_provider,
+            user_api_key=x_ai_key,
         )
 
-    db.add(
-        SubmissionRow(
-            problem_id=problem_id,
-            user_id=current_user.id,
-            user_answer=body.user_answer,
-            is_correct=is_ok,
-            feedback=feedback,
+    if current_user is not None:
+        db.add(
+            SubmissionRow(
+                problem_id=problem_id,
+                user_id=current_user.id,
+                user_answer=body.user_answer,
+                is_correct=is_ok,
+                feedback=feedback,
+            )
         )
-    )
-    await db.commit()
+        await db.commit()
 
     if is_ok:
         return SubmitResponse(is_correct=True, message="정답입니다!")
@@ -269,6 +280,113 @@ async def submit_answer(
         feedback=feedback,
         correct_answer=correct_answer,
     )
+
+
+# ── Reveal answer (study mode) ───────────────────────────────────────────────
+
+
+class RevealResponse(BaseModel):
+    answer: str
+    concept: str
+    hint: str
+
+
+@app.get("/problems/{problem_id}/reveal", response_model=RevealResponse)
+async def reveal_answer(
+    problem_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[UserRow] = Depends(get_current_user_optional),
+):
+    """Return the canonical answer + concept for study purposes.
+    Available to guests too (public seed problems)."""
+    row = await db.get(ProblemRow, problem_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Problem not found")
+    if row.owner_id is not None:
+        if current_user is None or row.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Problem not found")
+    return RevealResponse(answer=row.answer, concept=row.concept, hint=row.hint)
+
+
+# ── Recommend next problem ───────────────────────────────────────────────────
+
+
+class RecommendItem(BaseModel):
+    id: int
+    title: str
+    category: str
+    difficulty: str
+    problem_type: str
+
+
+@app.get("/problems/{problem_id}/recommend", response_model=list[RecommendItem])
+async def recommend_next(
+    problem_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[UserRow] = Depends(get_current_user_optional),
+    limit: int = 3,
+    exclude: Optional[str] = None,  # comma-separated ids
+):
+    """Recommend up to `limit` next problems.
+    Strategy:
+    - Same category as current, same/+1 difficulty
+    - Exclude provided ids and the current id
+    - Logged-in users get unsolved-first ordering when available."""
+    current = await db.get(ProblemRow, problem_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Problem not found")
+
+    excluded_ids: set[int] = {problem_id}
+    if exclude:
+        for s in exclude.split(","):
+            try:
+                excluded_ids.add(int(s.strip()))
+            except ValueError:
+                continue
+
+    # Visible problems (public seeds + own user-generated)
+    visibility = or_(ProblemRow.owner_id.is_(None), ProblemRow.owner_id == (current_user.id if current_user else -1))
+
+    # Pull a candidate pool of same category with same problem_type
+    stmt = (
+        select(ProblemRow)
+        .where(
+            visibility,
+            ProblemRow.category == current.category,
+            ProblemRow.problem_type == current.problem_type,
+        )
+        .order_by(ProblemRow.difficulty, ProblemRow.id)
+        .limit(50)
+    )
+    candidates = (await db.execute(stmt)).scalars().all()
+
+    # Filter excluded
+    candidates = [c for c in candidates if c.id not in excluded_ids]
+
+    # If logged in, push unsolved to the front
+    if current_user is not None and candidates:
+        solved_rows = await db.execute(
+            select(SubmissionRow.problem_id)
+            .where(
+                SubmissionRow.user_id == current_user.id,
+                SubmissionRow.is_correct == True,  # noqa: E712
+            )
+            .distinct()
+        )
+        solved = {r[0] for r in solved_rows.all()}
+        candidates.sort(key=lambda r: (r.id in solved, r.difficulty, r.id))
+
+    picks = candidates[:limit]
+    return [
+        RecommendItem(
+            id=r.id,
+            title=r.title,
+            category=r.category,
+            difficulty=r.difficulty,
+            problem_type=r.problem_type,
+        )
+        for r in picks
+    ]
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

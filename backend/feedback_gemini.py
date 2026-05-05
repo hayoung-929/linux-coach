@@ -1,3 +1,4 @@
+from google import genai
 from google.genai import types
 
 from gemini_call import aio_generate_content
@@ -17,8 +18,15 @@ async def generate_gemini_feedback(
     problem_title: str,
     question: str,
     user_answer: str,
+    api_key: str | None = None,
 ) -> str:
-    client = get_gemini_client()
+    if api_key:
+        try:
+            client = genai.Client(api_key=api_key)
+        except Exception:
+            client = None
+    else:
+        client = get_gemini_client()
     if client is None:
         return _FALLBACK
 
