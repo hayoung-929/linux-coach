@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -810,6 +811,13 @@ async def list_wrong_notes(
 
 # ── Generate ──────────────────────────────────────────────────────────────────
 
+# Per-user in-memory rate limit.
+# AI generation is expensive; enforce a minimum gap between calls per user.
+# Keyed by user_id → unix timestamp of their last accepted request.
+_generate_last_call: dict[int, float] = {}
+_GENERATE_COOLDOWN_SECONDS = 10   # minimum seconds between calls per user
+
+
 class GenerateRequest(BaseModel):
     category: Category
     difficulty: Difficulty
@@ -817,7 +825,12 @@ class GenerateRequest(BaseModel):
 
 
 class GenerateResponse(BaseModel):
+    success: bool = True
+    mode: str   # "free_rule" | "user_ai" | "admin_ai"
+    source: str  # "ai" | "fallback_template"
+    count: int
     problems: list[Problem]
+    message: str
 
 
 @app.post("/generate-problems", response_model=GenerateResponse)
@@ -828,36 +841,63 @@ async def generate_problems_endpoint(
 ):
     _log = logging.getLogger("linuxcoach.generate")
 
+    # ── Per-user rate limit ───────────────────────────────────────────────────
+    now = time.time()
+    last_call = _generate_last_call.get(current_user.id, 0.0)
+    elapsed = now - last_call
+    if elapsed < _GENERATE_COOLDOWN_SECONDS:
+        wait = int(_GENERATE_COOLDOWN_SECONDS - elapsed) + 1
+        _log.warning(
+            "[Generate] rate_limited user=%s elapsed=%.1fs wait=%ds",
+            current_user.id, elapsed, wait,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"{wait}초 후에 다시 시도해 주세요.",
+            headers={"Retry-After": str(wait)},
+        )
+    _generate_last_call[current_user.id] = now
+
+    provider = cloud_ai_provider()
+
+    # Determine mode label for response
+    if provider is None:
+        mode = "free_rule"
+    else:
+        mode = "user_ai"
+
     _log.info(
-        "[generate] user=%s category=%s difficulty=%s count=%d",
-        current_user.id, body.category, body.difficulty, body.count,
+        "[Generate] START user=%s mode=%s category=%s difficulty=%s count=%d",
+        current_user.id, mode, body.category, body.difficulty, body.count,
     )
 
     # ── Step 1: Generate raw problem dicts ────────────────────────────────────
     try:
-        raw_list = await ai_generate_problems(
+        raw_list, gen_source = await ai_generate_problems(
             category=body.category,
             difficulty=body.difficulty,
             count=body.count,
         )
     except GeminiQuotaExceededError as e:
-        _log.warning("[generate] quota exceeded: %s", e)
+        _log.warning("[Generate] quota_exceeded=%s", e)
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        _log.error("[generate] generation error: %s", e, exc_info=True)
+        _log.error("[Generate] generation_error=%s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"문제 생성 중 오류: {e}")
 
     if not raw_list:
-        _log.error("[generate] empty raw_list returned — this should never happen")
+        _log.error("[Generate] generated_count=0 — this should never happen")
         raise HTTPException(status_code=500, detail="문제 생성 결과가 비어 있습니다.")
 
-    _log.info("[generate] generated %d raw problems", len(raw_list))
+    _log.info("[Generate] generated_count=%d source=%s", len(raw_list), gen_source)
 
     # ── Step 2: Persist to DB ─────────────────────────────────────────────────
-    is_cloud = cloud_ai_provider() is not None
+    # Mark ai_generated=True only when Cloud AI actually produced the problems
+    ai_generated_flag = (gen_source == "ai")
     created: list[ProblemRow] = []   # keep references so we can read IDs after flush
     created_ids: list[int] = []
 
+    _log.info("[Generate] db_save_start count=%d owner=%s", len(raw_list), current_user.id)
     try:
         for raw in raw_list:
             ans = raw.get("answer", "")
@@ -874,7 +914,7 @@ async def generate_problems_endpoint(
                 answer=ans,
                 hint=str(raw.get("hint") or ""),
                 concept=str(raw.get("concept") or ""),
-                ai_generated=is_cloud,
+                ai_generated=ai_generated_flag,
                 problem_type="command",
                 owner_id=current_user.id,
             )
@@ -888,12 +928,12 @@ async def generate_problems_endpoint(
         created_ids = [row.id for row in created if row.id is not None]
 
         await db.commit()
-        _log.info("[generate] committed %d problems, IDs=%s", len(created_ids), created_ids)
+        _log.info("[Generate] db_saved_count=%d returned_ids=%s", len(created_ids), created_ids)
 
     except Exception as e:
         await db.rollback()
-        _log.error("[generate] DB error: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"DB 저장 중 오류: {e}")
+        _log.error("[Generate] db_save_error=%s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"문제 저장 중 오류가 발생했습니다: {e}")
 
     # ── Step 3: Reload from DB (fresh SELECT — avoids ORM lazy-load issues) ──
     if created_ids:
@@ -911,13 +951,32 @@ async def generate_problems_endpoint(
         result = await db.execute(stmt)
         saved_rows = list(reversed(result.scalars().all()))
 
-    _log.info("[generate] returning %d problems to client", len(saved_rows))
-
     if not saved_rows:
-        _log.error("[generate] saved_rows is empty after commit — DB issue")
+        _log.error("[Generate] saved_rows empty after commit — DB issue")
         raise HTTPException(status_code=500, detail="저장된 문제를 불러오지 못했습니다.")
 
-    return GenerateResponse(problems=saved_rows)
+    final_ids = [r.id for r in saved_rows]
+    _log.info("[Generate] DONE returning=%d returned_ids=%s source=%s mode=%s",
+              len(saved_rows), final_ids, gen_source, mode)
+
+    # Build human-readable message
+    if gen_source == "ai":
+        message = f"AI가 {len(saved_rows)}개 문제를 생성했습니다."
+    elif provider is not None:
+        message = f"AI 응답 문제로 인해 내장 템플릿에서 {len(saved_rows)}개 문제를 생성했습니다."
+    else:
+        message = f"내장 템플릿에서 {len(saved_rows)}개 문제를 생성했습니다."
+
+    source_label = "ai" if gen_source == "ai" else "template"
+
+    return GenerateResponse(
+        success=True,
+        mode=mode,
+        source=source_label,
+        count=len(saved_rows),
+        problems=saved_rows,
+        message=message,
+    )
 
 
 # ── Profile ──────────────────────────────────────────────────────────────────

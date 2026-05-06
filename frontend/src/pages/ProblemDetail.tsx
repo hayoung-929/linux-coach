@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { API_URL, apiFetch, fetchAppConfig } from "../api";
+import { apiFetch, fetchAppConfig } from "../api";
 import { CATEGORY_CONFIG, DIFFICULTY_CONFIG } from "../constants";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -71,7 +71,7 @@ export default function ProblemDetail() {
     setRecommendations([]);
     setLoading(true);
     setNotFound(false);
-    fetch(`${API_URL}/problems/${id}`)
+    apiFetch(`/problems/${id}`)
       .then((r) => {
         if (r.status === 404) throw Object.assign(new Error(), { is404: true });
         if (!r.ok) throw new Error();

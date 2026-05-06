@@ -60,7 +60,12 @@ export interface GenerateRequest {
 }
 
 export interface GenerateResponse {
+  success: boolean;
+  mode: "free_rule" | "user_ai" | "admin_ai";
+  source: "ai" | "template";
+  count: number;
   problems: Problem[];
+  message: string;
 }
 
 export interface WrongNote {
